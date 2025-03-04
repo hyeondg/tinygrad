@@ -7,6 +7,7 @@ from extra.models.llama import Transformer, convert_from_huggingface, convert_fr
 from tinygrad.nn.state import safe_load, torch_load, load_state_dict, get_parameters, gguf_load
 from tinygrad import Tensor, dtypes, nn, Context, Device, GlobalCounters
 from tinygrad.helpers import Profiling, Timing, DEBUG, colored, fetch, tqdm
+import yaml
 
 class Tokenizer:
   pat_str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
@@ -179,6 +180,12 @@ def build_transformer(model_path: Path, model_size="8B", quantize=None, scale_dt
   weights = fix_bf16(weights)
 
   with Context(BEAM=0):
+    # open yaml
+    with open('examples/model_config.yml', 'r') as f:
+      config_ = yaml.safe_load(f)
+      print(config_)
+      return
+
     # quantize
     if quantize == "float16": weights = {k:v.cast(quantize).contiguous() for k,v in weights.items()}
     elif quantize is not None:
@@ -234,12 +241,12 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser()
   parser.add_argument("--download_model", action="store_true", help="Download a model")
   parser.add_argument("--model", type=Path, help="Model path")
-  parser.add_argument("--size", choices=["1B", "8B", "70B"], default="1B", help="Model size")
+  parser.add_argument("--size", choices=["1B", "8B", "70B"], default="8B", help="Model size")
   parser.add_argument("--shard", type=int, default=1, help="Shard the model across multiple devices")
   parser.add_argument("--quantize", choices=["int8", "nf4", "float16"], help="Quantization method")
   parser.add_argument("--no_api", action="store_true", help="Disable the api and run a cli test interface")
   parser.add_argument("--host", type=str, default="0.0.0.0", help="Web server bind address")
-  parser.add_argument("--port", type=int, default=7776, help="Web server port")
+  parser.add_argument("--port", type=int, default=7737, help="Web server port")
   parser.add_argument("--debug", action="store_true", help="Enable debug mode")
   parser.add_argument("--seed", type=int, help="Random seed")
   parser.add_argument("--temperature", type=int, default=0.85, help="Temperature")

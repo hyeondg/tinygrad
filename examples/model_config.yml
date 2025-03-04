@@ -1,0 +1,32 @@
+
+
+args:
+  dim: 2048
+  n_heads: 32
+  n_kv_heads: 8
+  norm_eps: 1e-5
+  rope_theta: 500000
+  vocab_size: 128256
+  hidden_dim: 8192
+
+
+embedding:
+  vocab_size:
+
+attention:
+  dim:
+  n_heads:
+  n_kv_heads:
+  n_rep:
+  max_context:
+
+ffn:
+  cache_kv:
+
+attention_norm:
+  weight:
+  eps:
+
+ffn_norm:
+  weight:
+  eps:

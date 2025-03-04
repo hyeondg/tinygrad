@@ -136,16 +136,19 @@ main {
   max-width: 75%;
   padding: 0.5rem 1rem;
   border-radius: 20px;
+  font-family: monospace;
 }
 .message-role-assistant {
   background-color: var(--secondary-color);
   margin-right: auto;
   color: #fff;
+  font-family: monospace;
 }
 .message-role-user {
   margin-left: auto;
   background-color: var(--primary-color);
   color: #000;
+  font-family: monospace;
 }
 
 .message > pre {
@@ -271,11 +274,21 @@ p {
 
 /* fonts */
 .megrim-regular {
-  font-family: monospace;
-  font-weight: 400;
+  font-family: 'Noto Sans Mono', monospace;
+  font-weight: 500;
+  font-style: normal;
+}
+
+.message {
+  font-family: 'Noto Sans Mono', monospace;
+  font-weight: 500;
   font-style: normal;
 }
 
 .monospace {
-  font-family: monospace;
+  font-family: 'Noto Sans Mono', monospace;
+}
+
+body {
+  font-family: 'Noto Sans Mono', monospace;
 }

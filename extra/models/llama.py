@@ -39,10 +39,10 @@ class Attention:
     self.n_rep = self.n_heads // self.n_kv_heads
     self.max_context = max_context
 
-    self.wq = linear(dim, self.n_heads * self.head_dim, bias=False)
-    self.wk = linear(dim, self.n_kv_heads * self.head_dim, bias=False)
-    self.wv = linear(dim, self.n_kv_heads * self.head_dim, bias=False)
-    self.wo = linear(self.n_heads * self.head_dim, dim, bias=False)
+    self.wq = linear(dim, self.n_heads * self.head_dim, bias=True)
+    self.wk = linear(dim, self.n_kv_heads * self.head_dim, bias=True)
+    self.wv = linear(dim, self.n_kv_heads * self.head_dim, bias=True)
+    self.wo = linear(self.n_heads * self.head_dim, dim, bias=True)
 
   def __call__(self, x:Tensor, start_pos:Union[Variable,int], freqs_cis:Tensor, mask:Optional[Tensor]) -> Tensor:
     if getenv("WQKV"):
@@ -151,7 +151,7 @@ def sample(logits: Tensor, temp: float, k: int, p: float, af: float, ap: float):
   return output_token
 
 class Transformer:
-  def __init__(self, dim:int, hidden_dim:int, n_heads:int, n_layers:int, norm_eps:float, vocab_size, linear=nn.Linear, embedding=nn.Embedding, n_kv_heads=None, rope_theta=10000, max_context=1024, jit=True, feed_forward=FeedForward):
+  def __init__(self, dim:int, hidden_dim:int, n_heads:int, n_layers:int, norm_eps:float, vocab_size, linear=nn.Linear, embedding=nn.Embedding, n_kv_heads=None, rope_theta=10000, max_context=4096, jit=True, feed_forward=FeedForward):
     self.layers = [TransformerBlock(dim, hidden_dim, n_heads, n_kv_heads, norm_eps, max_context, linear, feed_forward=feed_forward) for _ in range(n_layers)]
     self.norm = nn.RMSNorm(dim, norm_eps)
     self.tok_embeddings = embedding(vocab_size, dim)
@@ -171,6 +171,7 @@ class Transformer:
     for layer in self.layers: h = layer(h, start_pos, freqs_cis, mask)
     logits = self.output(self.norm(h)).float()[:, -1, :]
 
+    print(logits.realize())
     return sample(logits.flatten(), temperature, top_k, top_p, alpha_f, alpha_p).realize()
 
   def __call__(self, tokens:Tensor, start_pos:int, temperature:float=0.0, top_k:int=0, top_p:float=0.8, alpha_f:float=0.0, alpha_p:float=0.0):
@@ -212,13 +213,19 @@ def convert_from_gguf(weights:dict[str, Tensor], model: Transformer):
     "token_embd.weight": "tok_embeddings.weight",
     **{f"blk.{l}.attn_norm.weight": f"layers.{l}.attention_norm.weight" for l in range(len(model.layers))},
     **{f"blk.{l}.attn_{x}.weight": f"layers.{l}.attention.w{x}.weight" for x in ["q", "k", "v"] for l in range(len(model.layers))},
+    **{f"blk.{l}.attn_{x}.bias": f"layers.{l}.attention.w{x}.bias" for x in ["q", "k", "v"] for l in range(len(model.layers))},
+    **{f"blk.{l}.attn_norm.weight": f"layers.{l}.attention_norm.weight" for l in range(len(model.layers)+ 1)},
     **{f"blk.{l}.attn_output.weight": f"layers.{l}.attention.wo.weight" for l in range(len(model.layers))},
     **{f"blk.{l}.ffn_norm.weight": f"layers.{l}.ffn_norm.weight" for l in range(len(model.layers))},
     **{f"blk.{l}.ffn_{x}.weight": f"layers.{l}.feed_forward.w{y}.weight" for x, y in {"gate": "1", "down": "2", "up": "3"}.items() for l in range(len(model.layers))},
     "output_norm.weight": "norm.weight",
     "rope_freqs.weight": "rope_freqs.weight",
   }
-  sd = {keymap[k]: v for k,v in weights.items()}
+
+  import pprint
+  pprint.pprint(weights.items())
+
+  sd = {keymap[k]: v for k,v in weights.items() if k != "output.weight"}
   sd["output.weight"] = weights["token_embd.weight"]
   return sd
 
