@@ -1,5 +1,6 @@
 import json, pathlib, zipfile, pickle, tarfile, struct, functools, io
 from collections import OrderedDict
+from enum import Enum
 from typing import Union, Optional, Any, Callable, BinaryIO, Iterable
 from tinygrad.tensor import Tensor
 from tinygrad.dtype import dtypes
@@ -144,10 +145,13 @@ def load_state_dict(model, state_dict:dict[str, Tensor], strict=True, verbose=Tr
     model_state_dict = get_state_dict(model)
     if DEBUG >= 1 and len(state_dict) > len(model_state_dict):
       print("WARNING: unused weights in state_dict", sorted(list(state_dict.keys() - model_state_dict.keys())))
+
+    print(model_state_dict.keys())
+
     for k,v in (t := tqdm(model_state_dict.items(), disable=CI or not verbose)):
       t.desc = f"ram used: {GlobalCounters.mem_used/1e9:5.2f} GB, {k:50s}: "
       if k not in state_dict and not strict:
-        if DEBUG >= 1: print(f"WARNING: not loading {k}")
+        if DEBUG >= 1: print(f"WARNING: cannot find key `{k}` defined in the model from the state_dict")
         continue
       if v.shape != state_dict[k].shape:
         raise ValueError(f'Shape mismatch in layer `{k}`: Expected shape {v.shape}, but found {state_dict[k].shape} in state dict.')
@@ -264,9 +268,47 @@ def ggml_data_to_tensor(t: Tensor, n: int, ggml_type: int) -> Tensor:
   Supported quantized types: Q4_0 (id: 2), Q4_1 (id: 3), Q8_0 (id: 8), Q6_K (id: 14)
   """
   # https://github.com/ggerganov/ggml/blob/6dccc647264f5429df2624f36138f601e7ce23e5/include/ggml.h#L356
+  class GGML_ENUM(Enum):
+    GGML_TYPE_F32     = 0
+    GGML_TYPE_F16     = 1
+    GGML_TYPE_Q4_0    = 2
+    GGML_TYPE_Q4_1    = 3
+    # GGML_TYPE_Q4_2 = 4, support has been removed
+    # GGML_TYPE_Q4_3 = 5, support has been removed
+    GGML_TYPE_Q5_0    = 6
+    GGML_TYPE_Q5_1    = 7
+    GGML_TYPE_Q8_0    = 8
+    GGML_TYPE_Q8_1    = 9
+    GGML_TYPE_Q2_K    = 10
+    GGML_TYPE_Q3_K    = 11
+    GGML_TYPE_Q4_K    = 12
+    GGML_TYPE_Q5_K    = 13
+    GGML_TYPE_Q6_K    = 14
+    GGML_TYPE_Q8_K    = 15
+    GGML_TYPE_IQ2_XXS = 16
+    GGML_TYPE_IQ2_XS  = 17
+    GGML_TYPE_IQ3_XXS = 18
+    GGML_TYPE_IQ1_S   = 19
+    GGML_TYPE_IQ4_NL  = 20
+    GGML_TYPE_IQ3_S   = 21
+    GGML_TYPE_IQ2_S   = 22
+    GGML_TYPE_IQ4_XS  = 23
+    GGML_TYPE_I8      = 24
+    GGML_TYPE_I16     = 25
+    GGML_TYPE_I32     = 26
+    GGML_TYPE_I64     = 27
+    GGML_TYPE_F64     = 28
+    GGML_TYPE_IQ1_M   = 29
+    GGML_TYPE_BF16    = 30
+    GGML_TYPE_Q4_0_4_4 = 31 # runtime repacking
+    GGML_TYPE_Q4_0_4_8 = 32 # runtime repacking
+    GGML_TYPE_Q4_0_8_8 = 33 # runtime repacking
+    GGML_TYPE_TQ1_0   = 34
+    GGML_TYPE_TQ2_0   = 35
+    GGML_TYPE_COUNT = -1
 
   # native types
-  if (dtype := { 0: dtypes.float32, 1: dtypes.float16, 16: dtypes.int8, 17: dtypes.int16, 18: dtypes.int32 }.get(ggml_type)) is not None:
+  if (dtype := { 0: dtypes.float32, 1: dtypes.float16, 24: dtypes.int8, 25: dtypes.int16, 26: dtypes.int32 }.get(ggml_type)) is not None:
     return t[:dtype.itemsize * n].bitcast(dtype)
 
   def q_to_uint8(t: Tensor, b: int) -> Tensor:
@@ -277,17 +319,22 @@ def ggml_data_to_tensor(t: Tensor, n: int, ggml_type: int) -> Tensor:
   # map to (number of elements, number of bytes)
   if (nelements_nbytes := { 2: (32, 18), 3: (32, 20), 14: (256, 210), 8: (32, 34) }.get(ggml_type)) is not None:
     blocks = t[:(n//nelements_nbytes[0])*nelements_nbytes[1]].reshape((-1, nelements_nbytes[1]))
-    if ggml_type == 2: return (q_to_uint8(blocks[:,2:], 4).bitcast(dtypes.int8) - 8) * blocks[:,:2].bitcast(dtypes.float16).cast(dtypes.float32)
-    if ggml_type == 3:
-      d, m = (blocks[:,s:s+2].bitcast(dtypes.float16).cast(dtypes.float32) for s in [ 0, 2 ])
-      return q_to_uint8(blocks[:,4:], 4).bitcast(dtypes.int8) * d + m
-    if ggml_type == 8: return blocks[:,:2].bitcast(dtypes.float16).cast(dtypes.float32) * blocks[:,2:].bitcast(dtypes.int8)
-    if ggml_type == 14:
-      xl, xh = q_to_uint8(blocks[:,:128].reshape((-1, 2, 64)), 4), q_to_uint8(blocks[:,128:192].reshape((-1, 2, 32)), 2).lshift(4)
-      scales = blocks[:,192:208].bitcast(dtypes.int8).unsqueeze(-1).expand((-1, 16, 16)).reshape((-1, 256))
-      d = blocks[:,-2:].bitcast(dtypes.float16).cast(dtypes.float32).expand((-1, 256))
-      return d * (xl.bitwise_or(xh).bitcast(dtypes.int8) - 32).flatten(-2) * scales
-  raise ValueError(f"GGML type '{ggml_type}' is not supported!")
+    match GGML_ENUM(ggml_type):
+      case GGML_ENUM.GGML_TYPE_Q4_0:
+        return (q_to_uint8(blocks[:,2:], 4).bitcast(dtypes.int8) - 8) * blocks[:,:2].bitcast(dtypes.float16)#.cast(dtypes.float32)
+      case GGML_ENUM.GGML_TYPE_Q4_1:
+        #d, m = (blocks[:,s:s+2].bitcast(dtypes.float16).cast(dtypes.float32) for s in [ 0, 2 ])
+        d, m = (blocks[:,s:s+2].bitcast(dtypes.float16) for s in [ 0, 2 ])
+        return q_to_uint8(blocks[:,4:], 4).bitcast(dtypes.int8) * d + m
+      case GGML_ENUM.GGML_TYPE_Q8_0:
+        return blocks[:,:2].bitcast(dtypes.float16).cast(dtypes.float32) * blocks[:,2:].bitcast(dtypes.int8)
+      case GGML_ENUM.GGML_TYPE_Q6_K:
+        xl, xh = q_to_uint8(blocks[:,:128].reshape((-1, 2, 64)), 4), q_to_uint8(blocks[:,128:192].reshape((-1, 2, 32)), 2).lshift(4)
+        scales = blocks[:,192:208].bitcast(dtypes.int8).unsqueeze(-1).expand((-1, 16, 16)).reshape((-1, 256))
+        d = blocks[:,-2:].bitcast(dtypes.float16).cast(dtypes.float32).expand((-1, 256))
+        return d * (xl.bitwise_or(xh).bitcast(dtypes.int8) - 32).flatten(-2) * scales
+
+  raise ValueError(f"GGML type '{GGML_ENUM(ggml_type).name} ({ggml_type=})' is not supported!")
 
 @accept_filename
 def gguf_load(tensor: Tensor) -> tuple[dict, dict[str, Tensor]]:

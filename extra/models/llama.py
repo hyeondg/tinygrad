@@ -81,9 +81,9 @@ class Attention:
 
 class FeedForward:
   def __init__(self, dim:int, hidden_dim:int, linear=nn.Linear):
-    self.w1 = linear(dim, hidden_dim, bias=False)
-    self.w2 = linear(hidden_dim, dim, bias=False)
-    self.w3 = linear(dim, hidden_dim, bias=False) # the gate in Gated Linear Unit
+    self.w1 = linear(dim, hidden_dim, bias=True)
+    self.w2 = linear(hidden_dim, dim, bias=True)
+    self.w3 = linear(dim, hidden_dim, bias=True) # the gate in Gated Linear Unit
 
   def __call__(self, x:Tensor) -> Tensor:
     return self.w2(self.w1(x).silu() * self.w3(x)) # SwiGLU [arxiv/2002.05202, eq (5)]
@@ -151,11 +151,11 @@ def sample(logits: Tensor, temp: float, k: int, p: float, af: float, ap: float):
   return output_token
 
 class Transformer:
-  def __init__(self, dim:int, hidden_dim:int, n_heads:int, n_layers:int, norm_eps:float, vocab_size, linear=nn.Linear, embedding=nn.Embedding, n_kv_heads=None, rope_theta=10000, max_context=4096, jit=True, feed_forward=FeedForward):
+  def __init__(self, dim:int, hidden_dim:int, n_heads:int, n_layers:int, norm_eps:float, vocab_size, max_context, linear=nn.Linear, embedding=nn.Embedding, n_kv_heads=None, rope_theta=10000, jit=True, feed_forward=FeedForward):
     self.layers = [TransformerBlock(dim, hidden_dim, n_heads, n_kv_heads, norm_eps, max_context, linear, feed_forward=feed_forward) for _ in range(n_layers)]
     self.norm = nn.RMSNorm(dim, norm_eps)
     self.tok_embeddings = embedding(vocab_size, dim)
-    self.output = nn.Linear(dim, vocab_size, bias=False) if embedding == nn.Embedding else linear(dim, vocab_size, bias=False)
+    self.output = nn.Linear(dim, vocab_size, bias=True) if embedding == nn.Embedding else linear(dim, vocab_size, bias=True)
     self.max_context = max_context
     self.freqs_cis = precompute_freqs_cis(dim // n_heads, self.max_context * 2, rope_theta).contiguous()
     self.forward_jit = TinyJit(self.forward) if jit else None
@@ -210,23 +210,24 @@ def convert_from_huggingface(weights:dict[str, Tensor], model: Transformer, n_he
 
 def convert_from_gguf(weights:dict[str, Tensor], model: Transformer):
   keymap = {
-    "token_embd.weight": "tok_embeddings.weight",
-    **{f"blk.{l}.attn_norm.weight": f"layers.{l}.attention_norm.weight" for l in range(len(model.layers))},
-    **{f"blk.{l}.attn_{x}.weight": f"layers.{l}.attention.w{x}.weight" for x in ["q", "k", "v"] for l in range(len(model.layers))},
-    **{f"blk.{l}.attn_{x}.bias": f"layers.{l}.attention.w{x}.bias" for x in ["q", "k", "v"] for l in range(len(model.layers))},
-    **{f"blk.{l}.attn_norm.weight": f"layers.{l}.attention_norm.weight" for l in range(len(model.layers)+ 1)},
-    **{f"blk.{l}.attn_output.weight": f"layers.{l}.attention.wo.weight" for l in range(len(model.layers))},
-    **{f"blk.{l}.ffn_norm.weight": f"layers.{l}.ffn_norm.weight" for l in range(len(model.layers))},
-    **{f"blk.{l}.ffn_{x}.weight": f"layers.{l}.feed_forward.w{y}.weight" for x, y in {"gate": "1", "down": "2", "up": "3"}.items() for l in range(len(model.layers))},
-    "output_norm.weight": "norm.weight",
-    "rope_freqs.weight": "rope_freqs.weight",
+    "token_embd.weight"                       : "tok_embeddings.weight",
+    **{f"blk.{l}.attn_norm.weight"            : f"layers.{l}.attention_norm.weight" for l in range(len(model.layers))},
+    **{f"blk.{l}.attn_norm.bias"              : f"layers.{l}.attention_norm.bias" for l in range(len(model.layers))},
+    **{f"blk.{l}.attn_{x}.weight"             : f"layers.{l}.attention.w{x}.weight" for x in ["q", "k", "v"] for l in range(len(model.layers))},
+    **{f"blk.{l}.attn_{x}.bias"               : f"layers.{l}.attention.w{x}.bias" for x in ["q", "k", "v"] for l in range(len(model.layers))},
+    **{f"blk.{l}.attn_output.weight"          : f"layers.{l}.attention.wo.weight" for l in range(len(model.layers))},
+    **{f"blk.{l}.attn_output.bias"            : f"layers.{l}.attention.wo.bias" for l in range(len(model.layers))},
+    **{f"blk.{l}.attn_norm.weight"            : f"layers.{l}.attention_norm.weight" for l in range(len(model.layers))},
+    **{f"blk.{l}.attn_norm.bias"              : f"layers.{l}.attention_norm.bias" for l in range(len(model.layers))},
+    **{f"blk.{l}.ffn_norm.weight"             : f"layers.{l}.ffn_norm.weight" for l in range(len(model.layers))},
+    **{f"blk.{l}.ffn_norm.bias"               : f"layers.{l}.ffn_norm.bias" for l in range(len(model.layers))},
+    **{f"blk.{l}.ffn_{x}.weight"              : f"layers.{l}.feed_forward.w{y}.weight" for x, y in {"gate": "1", "down": "2", "up": "3"}.items() for l in range(len(model.layers))},
+    **{f"blk.{l}.ffn_{x}.bias"                : f"layers.{l}.feed_forward.w{y}.bias" for x, y in {"gate": "1", "down": "2", "up": "3"}.items() for l in range(len(model.layers))},
+    "output_norm.weight"                      : "norm.weight",
+    "rope_freqs.weight"                       : "rope_freqs.weight",
+    "output.weight"                           : "token_embd.weight",
   }
-
-  import pprint
-  pprint.pprint(weights.items())
-
-  sd = {keymap[k]: v for k,v in weights.items() if k != "output.weight"}
-  sd["output.weight"] = weights["token_embd.weight"]
+  sd = {keymap[k]: v for k,v in weights.items()}
   return sd
 
 def fix_bf16(weights:dict[Any, Tensor]):

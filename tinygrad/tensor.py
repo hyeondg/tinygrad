@@ -15,6 +15,7 @@ from tinygrad.device import Device, BufferSpec
 from tinygrad.engine.realize import run_schedule
 from tinygrad.engine.memory import memory_planner
 from tinygrad.engine.schedule import ScheduleItem, create_schedule_with_vars
+from tinygrad.helpers import Profiling, Timing, DEBUG
 
 # *** all in scope Tensors are here. this gets relevant UOps ***
 
@@ -203,7 +204,10 @@ class Tensor(SimpleMathTrait):
   def __repr__(self):
     ld = self.lazydata
     ld_repr = f"<UOp {ld.device} {ld.shape} {str(ld.dtype)[7:]} {ld.st if ld.base is not ld else (ld.op, ld.realized)}>"
-    return f"<Tensor {ld_repr} on {self.device} with grad {(self.grad.lazydata if self.grad is not None else None)!r}>"
+    if DEBUG >= 2:
+      return f"<Tensor {ld_repr=} size={self.lazydata.size=} on {self.device=},  with grad {(self.grad.lazydata if self.grad is not None else None)!r}>"
+    else:
+      return f"<Tensor {ld_repr} on {self.device} with grad {(self.grad.lazydata if self.grad is not None else None)!r}>"
 
   # Python has a non moving GC, so this should be okay
   def __hash__(self): return id(self)

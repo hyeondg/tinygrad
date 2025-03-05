@@ -1,13 +1,13 @@
 from pathlib import Path
 from typing import List
-import json, argparse, random, time, os
+import json, argparse, random, time, os, yaml
 import tiktoken
 from tiktoken.load import load_tiktoken_bpe
 from extra.models.llama import Transformer, convert_from_huggingface, convert_from_gguf, fix_bf16
 from tinygrad.nn.state import safe_load, torch_load, load_state_dict, get_parameters, gguf_load
 from tinygrad import Tensor, dtypes, nn, Context, Device, GlobalCounters
 from tinygrad.helpers import Profiling, Timing, DEBUG, colored, fetch, tqdm
-import yaml
+from gguf_parser import parse_gguf_metadata
 
 class Tokenizer:
   pat_str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
@@ -59,7 +59,7 @@ def load(fn:str):
     parts = {n: load(str(Path(fn).parent / Path(n).name)) for n in set(weight_map.values())}
     return {k: parts[n][k] for k, n in weight_map.items()}
   elif fn.endswith(".gguf"):
-    gguf_tensor = Tensor.empty(os.stat(fn).st_size, dtype=dtypes.uint8, device=f"disk:{fn}").to(Device.DEFAULT)
+    gguf_tensor = Tensor.empty(os.stat(fn).st_size, dtype=dtypes.uint8, device=f"disk:{fn}").to('cpu')
     return gguf_load(gguf_tensor)[1]
   elif fn.endswith(".safetensors"):
     return safe_load(fn)
@@ -156,14 +156,38 @@ MODEL_PARAMS = {
   "70B": {
     "args": {"dim": 8192, "n_heads": 64, "n_kv_heads": 8, "n_layers": 80, "norm_eps": 1e-5, "rope_theta": 500000, "vocab_size": 128256,  "hidden_dim": 28672},
     "files": 8
+  },
+  "mine": {
+    "args": {"dim": 1024, "n_heads": 32, "n_kv_heads": 4, "n_layers": 32, "norm_eps": 1e-5, "rope_theta": 500000, "vocab_size": 92416,  "hidden_dim": 13440},
+    "files": 1
   }
 }
-def build_transformer(model_path: Path, model_size="8B", quantize=None, scale_dtype=dtypes.float16, device=None, max_context=8192, load_weights=True):
+
+configs = yaml.safe_load(open('examples/model_config.yml'))
+
+
+def build_transformer(model_path: Path, model_size="8B", quantize=None, scale_dtype=dtypes.float16, device=None, max_context=4096, load_weights=True):
   # build model
   if quantize == "int8": linear, embedding, quantize_embeds = Int8Linear, Int8Embedding, True
   elif quantize == "nf4": linear, embedding, quantize_embeds = NF4Linear(64), nn.Embedding, False
   else: linear, embedding, quantize_embeds = nn.Linear, nn.Embedding, False
-  model = Transformer(**MODEL_PARAMS[model_size]["args"], linear=linear, embedding=embedding, max_context=max_context, jit=True)
+  print(f"{linear=}, {embedding=}, ")
+  if args.direct:
+    print(parse_gguf_metadata(model_path))
+    model = Transformer(**parse_gguf_metadata(model_path),
+                        linear=linear,
+                        embedding=embedding,
+                        jit=True)
+
+  elif args.current:
+    model = Transformer(**configs['current']['args'],
+                        linear=linear,
+                        embedding=embedding,
+                        max_context=max_context,
+                        jit=True)
+  else:
+    model = Transformer(**MODEL_PARAMS[model_size]["args"], linear=linear, embedding=embedding, max_context=max_context, jit=True)
+
 
   if not load_weights: return model
   # load weights
@@ -180,12 +204,6 @@ def build_transformer(model_path: Path, model_size="8B", quantize=None, scale_dt
   weights = fix_bf16(weights)
 
   with Context(BEAM=0):
-    # open yaml
-    with open('examples/model_config.yml', 'r') as f:
-      config_ = yaml.safe_load(f)
-      print(config_)
-      return
-
     # quantize
     if quantize == "float16": weights = {k:v.cast(quantize).contiguous() for k,v in weights.items()}
     elif quantize is not None:
@@ -241,12 +259,14 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser()
   parser.add_argument("--download_model", action="store_true", help="Download a model")
   parser.add_argument("--model", type=Path, help="Model path")
-  parser.add_argument("--size", choices=["1B", "8B", "70B"], default="8B", help="Model size")
+  parser.add_argument("--current", action="store_true", help="Model path")
+  parser.add_argument("--direct", action="store_true", help="Model path")
+  parser.add_argument("--size", required=False, default="8B", help="Model size")
   parser.add_argument("--shard", type=int, default=1, help="Shard the model across multiple devices")
   parser.add_argument("--quantize", choices=["int8", "nf4", "float16"], help="Quantization method")
   parser.add_argument("--no_api", action="store_true", help="Disable the api and run a cli test interface")
   parser.add_argument("--host", type=str, default="0.0.0.0", help="Web server bind address")
-  parser.add_argument("--port", type=int, default=7737, help="Web server port")
+  parser.add_argument("--port", type=int, default=7776, help="Web server port")
   parser.add_argument("--debug", action="store_true", help="Enable debug mode")
   parser.add_argument("--seed", type=int, help="Random seed")
   parser.add_argument("--temperature", type=int, default=0.85, help="Temperature")
@@ -429,7 +449,7 @@ if __name__ == "__main__":
       }
       yield f"data: {json.dumps(res)}\n\n"
 
-    app.run(host=args.host, port=args.port, debug=args.debug)
+    app.run(host='0.0.0.0', port=args.port, debug=args.debug)
   elif args.benchmark:
     toks = [tokenizer.bos_id] + encode_message("user", "Hello.") + encode_role("assistant")
 
