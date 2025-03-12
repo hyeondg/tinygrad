@@ -8,6 +8,7 @@ from tinygrad.nn.state import safe_load, torch_load, load_state_dict, get_parame
 from tinygrad import Tensor, dtypes, nn, Context, Device, GlobalCounters
 from tinygrad.helpers import Profiling, Timing, DEBUG, colored, fetch, tqdm
 from gguf_parser import parse_gguf_metadata
+import tokenizers
 
 class Tokenizer:
   pat_str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
@@ -173,7 +174,7 @@ def build_transformer(model_path: Path, model_size="8B", quantize=None, scale_dt
   else: linear, embedding, quantize_embeds = nn.Linear, nn.Embedding, False
   print(f"{linear=}, {embedding=}, ")
   if args.direct:
-    print(parse_gguf_metadata(model_path))
+    #print(parse_gguf_metadata(model_path))
     model = Transformer(**parse_gguf_metadata(model_path),
                         linear=linear,
                         embedding=embedding,
@@ -302,7 +303,13 @@ if __name__ == "__main__":
   print(f"seed = {Tensor._seed}")
   TEMPERATURE = args.temperature
 
-  tokenizer = Tokenizer(str(args.tokenizer)) if args.tokenizer is not None else Tokenizer(str((args.model if args.model.is_dir() else args.model.parent) / "tokenizer.model"))
+  if args.tokenizer:
+    if args.tokenizer.with_suffix(".json"):
+      tokenizer = tokenizers.Tokenizer.from_file(str(args.tokenizer))
+    else:
+      tokenizer = Tokenizer(str(args.tokenizer))
+  else:
+    tokenizer = Tokenizer(str((args.model if args.model.is_dir() else args.model.parent) / "tokenizer.model"))
   def encode_role(role: str):
     return [tokenizer.special_tokens["<|start_header_id|>"]] + tokenizer.encode(role) + [tokenizer.special_tokens["<|end_header_id|>"]] + tokenizer.encode("\n\n")
   def encode_message(role: str, content: str):
@@ -311,6 +318,19 @@ if __name__ == "__main__":
   device = tuple(f"{Device.DEFAULT}:{i}" for i in range(args.shard)) if args.shard > 1 else Device.DEFAULT
   model = build_transformer(args.model, model_size=args.size, quantize=args.quantize, device=device)
   param_bytes = sum(x.lazydata.size * x.dtype.itemsize for x in get_parameters(model))
+  input_sequence = "My name is"
+
+  toks: List[int] = [tokenizer.encode(input_sequence).ids]
+  print(toks)
+
+  count = 15
+  for i in range(count):
+    tok = model(Tensor([*toks]).to("AMD"), 0, temperature=args.temperature).flatten()[-1].item()
+    toks[0] += [tok]
+    print(toks)
+    print(tokenizer.decode(toks[0]))
+
+  exit(0)
 
   if not args.no_api and not args.benchmark:
     from bottle import Bottle, request, response, HTTPResponse, abort, static_file
@@ -367,6 +387,7 @@ if __name__ == "__main__":
       while True:
         GlobalCounters.reset()
         tok = model(Tensor([[last_tok]], device=device), start_pos, TEMPERATURE, TOP_K, TOP_P, ALPHA_F, ALPHA_P).item()
+
         start_pos += 1
         last_tok = tok
         if tok in tokenizer.stop_tokens: break

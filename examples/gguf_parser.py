@@ -39,6 +39,7 @@ class Tokenizer:
       special_tokens=self.special_tokens,
     )
 
+
   @property
   def bos_id(self):
     return self.special_tokens["<|begin_of_text|>"]
@@ -139,20 +140,25 @@ def save_tokenizer_model(gguf, dst: str | None = None):
   """
   import base64
   reader = GGUFReader(gguf)
-  encode = lambda t: base64.b64encode(t).decode()
+  encode = lambda t: base64.b64encode(t)
 
   print("Key-Value Pairs:")  # noqa: NP100
-  max_key_length = max(len(key) for key in reader.fields.keys())
-  for key, field in reader.fields.items():
-    if "tokenizer.ggml.tokens" in key:
-      for idx, i in enumerate(field.data):
-        value = field.parts[i]
-        value = list(value)
-        if idx > len(field.data) - 700 and idx < len(field.data) - 500:
-          print(f"{idx}: {value}", end=" ")  # noqa: NP100
-          #value = "".join(map(lambda t: str(encode(t)), value))
-          #value = "".join(map(chr, value))
-          print(f"{bytes(value).decode()}")
+  with open(dst + "/tokenizer.model", "w") as f:
+    max_key_length = max(len(key) for key in reader.fields.keys())
+    for key, field in reader.fields.items():
+      if "tokenizer.ggml.tokens" in key:
+        for idx, i in enumerate(field.data):
+          value: "arraylike" = field.parts[i]
+          bt: bytearray = bytes(list(value))
+          if "PAD" in bt.decode():
+            continue
+
+          from html import unescape
+          #print(f"{bytes(list(value))} {encode(bytes(list(value))).decode('utf-8')} {idx}")
+          t = unescape(f"&{list(value)};")
+          print(f"{idx} {value} {t}")
+          #f.write(f"{encode(bt).decode()} {idx}\n")
+
 
   """
 
@@ -168,7 +174,14 @@ def save_tokenizer_model(gguf, dst: str | None = None):
 
 
 if __name__ == "__main__":
-  path = "/home/hyeondg/models/qwen1_5-7b-chat-q4_0.gguf"
+  import argparse
+  parser = argparse.ArgumentParser(description="Run LLaMA in tinygrad", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+  parser.add_argument("--model", type=str, default=None, help="Folder with the original weights to load, or single .index.json, .safetensors or .bin file")
+  parser.add_argument("--dst", type=str, default=None, help="Folder with the original weights to load, or single .index.json, .safetensors or .bin file")
+  args = parser.parse_args()
+
+  path = args.model
+  #path = "/home/hyeondg/models/openelm-3b-instruct.Q4_0.gguf"
   # stat_gguf_file(path)
   string = "INC90LjQutGC0L4="
   import base64
@@ -176,5 +189,5 @@ if __name__ == "__main__":
   decoder = base64.b64decode(string)
   print(decoder.decode())
 
-  # print(parse_gguf_metadata(path))
-  save_tokenizer_model(path)
+  save_tokenizer_model(path, args.dst)
+  print('⽗'.encode())
